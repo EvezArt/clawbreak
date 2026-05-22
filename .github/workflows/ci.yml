@@ -1,20 +1,24 @@
-name: CI Health Check
+name: CI
+
 on:
   push:
-    branches: [main, master]
+    branches: [main]
   pull_request:
-    branches: [main, master]
-  schedule:
-    - cron: '0 6 * * 1'
+    branches: [main]
+
 jobs:
-  health:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - name: Install and check
-        run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          find . -name '*.py' -not -path './.git/*' -exec python -m py_compile {} \;
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Start server
+        run: python3 server.py &
+        env:
+          CLAWBREAK_LLM_API_KEY: test
+      - name: Health check
+        run: sleep 3 && curl -f http://localhost:8080/health
