@@ -1,5 +1,5 @@
 llm:
-  api_key: GUNQBRQVDGXAPZDCOLYE7XKMZRAN4ZOQNYHA
+  api_key: ${VULTR_API_KEY}  # Read from env var — never commit secrets
   base_url: https://api.vultrinference.com/v1
   max_tokens: 4096
   model: zai-org/GLM-5.1-FP8
