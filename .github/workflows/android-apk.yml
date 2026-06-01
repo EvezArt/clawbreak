@@ -9,38 +9,115 @@ on:
     inputs:
       ref:
         description: 'Branch to build'
-        required: true
+        required: false
         default: 'main'
 
 jobs:
-  build:
+  build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
+      - name: Install Capacitor CLI + deps
         run: |
-          npm ci
-          npm install @capacitor/cli @capacitor/core
+          npm install -g @capacitor/cli@latest
+          npm install
+
+      - name: Verify www directory
+        run: ls -la www/ && wc -c www/index.html
+
+      - name: Initialize Capacitor
+        run: |
+          # Only init if capacitor.config.json doesn't have appId set
+          if ! grep -q "com.evez.clawbreak" capacitor.config.json 2>/dev/null; then
+            npx cap init ClawBreak com.evez.clawbreak --web-dir www
+          fi
+          echo "Capacitor config OK"
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
 
       - name: Add Android platform
-        run: npx cap add android
+        run: |
+          npx cap add android || echo "Android already added"
+          
+      - name: Sync web assets to Android
+        run: npx cap sync android
 
-      - name: Sync Capacitor plugins
-        run: npx cap sync
+      - name: Set gradlew executable
+        run: chmod +x android/gradlew
 
-      - name: Build Android APK
+      - name: Update Android app name
+        run: |
+          sed -i 's/android:label="[^"]*"/android:label="ClawBreak"/' android/app/src/main/AndroidManifest.xml || true
+
+      - name: Build debug APK (for distribution)
         working-directory: android
-        run: ./gradlew assembleRelease
+        run: |
+          ./gradlew assembleDebug --no-daemon -q
+          ls -la app/build/outputs/apk/debug/
 
-      - name: Upload APK artifact
+      - name: Build release APK (unsigned)
+        working-directory: android
+        run: |
+          ./gradlew assembleRelease --no-daemon -q || echo "Release build may need signing config"
+          ls -la app/build/outputs/apk/release/ 2>/dev/null || true
+
+      - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+          name: ClawBreak-EVEZ-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Upload release APK (if built)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClawBreak-EVEZ-release-apk  
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Create GitHub Release with APK
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "ClawBreak EVEZ Build #${{ github.run_number }}"
+          body: |
+            ## ClawBreak + EVEZ-OS Android APK
+            
+            **Build:** ${{ github.run_number }}  
+            **Commit:** ${{ github.sha }}
+            
+            ### Install on Samsung Galaxy A16
+            1. Download `app-debug.apk` below
+            2. Enable "Install from unknown sources" in Settings > Security
+            3. Open the APK file to install
+            
+            ### Features
+            - AI chat with Groq/OpenAI/custom backend
+            - Tool execution (shell, search, memory, file)
+            - EVEZ-OS forensic cognition layer
+            - Persistent memory across sessions
+            - Railway backend integration
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

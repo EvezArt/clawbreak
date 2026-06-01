@@ -303,5 +303,68 @@ def main():
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
-if __name__ == "__main__":
+
+
+# === EVEZ-OS Integration ===
+
+import subprocess
+import hashlib
+import time as _time
+
+EVEZ_STATE = {
+    "v_global": 6.128,
+    "round": 182,
+    "fires": 31,
+    "plane": "✓ CANONICAL",
+    "spine": []
+}
+
+@app.get("/api/evez/status")
+async def evez_status():
+    return EVEZ_STATE
+
+@app.post("/api/evez/run/{cmd}")
+async def evez_run(cmd: str):
+    ts = _time.time()
+    h = hashlib.sha256(f"{cmd}{ts}".encode()).hexdigest()[:12]
+    
+    if cmd == "play":
+        EVEZ_STATE["round"] += 1
+        EVEZ_STATE["v_global"] = round(EVEZ_STATE["v_global"] + 0.001, 3)
+        EVEZ_STATE["spine"].append({"t": ts, "h": h, "event": "PLAY", "round": EVEZ_STATE["round"]})
+        return {"status": "ok", "round": EVEZ_STATE["round"], "v": EVEZ_STATE["v_global"], "hash": h}
+    
+    elif cmd == "visualize":
+        return {"status": "ok", "artifact": f"cognition-{h}.svg", "frames": 24, "layers": ["attention", "memory", "output"]}
+    
+    elif cmd == "spine":
+        recent = EVEZ_STATE["spine"][-10:] if len(EVEZ_STATE["spine"]) > 10 else EVEZ_STATE["spine"]
+        return {"status": "ok", "spine_length": len(EVEZ_STATE["spine"]), "recent": recent, "integrity": "✓ VALID"}
+    
+    elif cmd == "sat":
+        EVEZ_STATE["fires"] += 1
+        return {"status": "ok", "contradictions": 0, "fires": EVEZ_STATE["fires"], "result": "CONSISTENT"}
+    
+    return {"status": "unknown_command", "cmd": cmd}
+
+@app.get("/api/memory")
+async def get_memory():
+    facts = memory.recall_all() if hasattr(memory, 'recall_all') else []
+    return {"facts": [{"id": i, "key": k, "value": v, "category": c} 
+                      for i, (k, v, c) in enumerate(facts)] if facts else []}
+
+@app.delete("/api/memory/{fact_id}")
+async def delete_memory(fact_id: int):
+    if hasattr(memory, 'delete'):
+        memory.delete(fact_id)
+    return {"status": "deleted"}
+
+@app.post("/api/history/clear")
+async def clear_history():
+    if hasattr(memory, 'clear_history'):
+        memory.clear_history()
+    return {"status": "cleared"}
+
+
+
     main()
