@@ -1,4 +1,4 @@
-name: Build Android APK — Samsung A16
+name: Build Android APK -- Samsung A16
 
 on:
   push:
@@ -21,32 +21,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Install Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.5'
-          cache-read-only: false
+          gradle-version: '8.7'
 
-      - name: Bootstrap gradle wrapper jar
+      - name: Generate gradle-wrapper.jar
         working-directory: android-native
         run: |
-          # If gradle-wrapper.jar is missing, generate it
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            gradle wrapper --gradle-version 8.5 --distribution-type bin
-          fi
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
           chmod +x gradlew
+          ls -la gradle/wrapper/
 
       - name: Build Debug APK
         working-directory: android-native
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
-
-      - name: Find APK
-        id: find_apk
-        run: |
-          APK=$(find android-native/app/build/outputs/apk -name '*.apk' 2>/dev/null | head -1)
-          echo "apk_path=$APK" >> $GITHUB_OUTPUT
-          echo "APK: $APK"
-          ls -lh "$APK" || echo "not found"
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -100
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -55,20 +44,15 @@ jobs:
           path: android-native/app/build/outputs/apk/debug/
           retention-days: 90
 
-      - name: Release APK on main push
+      - name: Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK=$(find android-native/app/build/outputs/apk -name '*.apk' | head -1)
-          gh release create "apk-build-${{ github.run_number }}" \
-            --title "ClawBreak A16 — Build #${{ github.run_number }}" \
-            --notes "## ClawBreak for Samsung Galaxy A16 (Android 14 / ARM64)
-
-Install:
-1. Download app-debug.apk below
-2. A16: Settings > Apps > Special access > Install unknown apps > enable Files
-3. Tap APK and install
-
-Auto-connects to live cloud server via endpoint.json (falls back to GitHub Pages if offline)." \
-            "$APK" || true
+          if [ -n "$APK" ]; then
+            gh release create "apk-build-${{ github.run_number }}" \
+              --title "ClawBreak A16 Build #${{ github.run_number }}" \
+              --notes 'Samsung Galaxy A16 debug APK. Install: Settings > Apps > Install unknown apps, then tap the APK.' \
+              "$APK" || true
+          fi
