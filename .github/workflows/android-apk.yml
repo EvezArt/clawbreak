@@ -1,4 +1,4 @@
-name: "Build Android APK \u2014 Samsung A16"
+name: Build Android APK — Samsung A16
 
 on:
   push:
@@ -19,55 +19,56 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android-native/**/*.gradle*') }}
-          restore-keys: gradle-${{ runner.os }}-
+          gradle-version: '8.5'
+          cache-read-only: false
 
-      - name: Set gradlew executable
+      - name: Bootstrap gradle wrapper jar
         working-directory: android-native
-        run: chmod +x gradlew
+        run: |
+          # If gradle-wrapper.jar is missing, generate it
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 8.5 --distribution-type bin
+          fi
+          chmod +x gradlew
 
       - name: Build Debug APK
         working-directory: android-native
         run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Locate APK
-        id: apk_path
+      - name: Find APK
+        id: find_apk
         run: |
-          APK=$(find android-native -name "*.apk" -type f | head -1)
-          echo "path=$APK" >> $GITHUB_OUTPUT
-          echo "Found APK: $APK"
-          ls -lh "$APK"
+          APK=$(find android-native/app/build/outputs/apk -name '*.apk' 2>/dev/null | head -1)
+          echo "apk_path=$APK" >> $GITHUB_OUTPUT
+          echo "APK: $APK"
+          ls -lh "$APK" || echo "not found"
 
-      - name: Upload artifact
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClawBreak-A16-debug
-          path: ${{ steps.apk_path.outputs.path }}
+          path: android-native/app/build/outputs/apk/debug/
           retention-days: 90
 
-      - name: Create GitHub Release
+      - name: Release APK on main push
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: apk-build-${{ github.run_number }}
-          name: "ClawBreak A16 \u2014 Build #${{ github.run_number }}"
-          body: |
-            ## ClawBreak for Samsung Galaxy A16 (Android 14 / ARM64)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK=$(find android-native/app/build/outputs/apk -name '*.apk' | head -1)
+          gh release create "apk-build-${{ github.run_number }}" \
+            --title "ClawBreak A16 — Build #${{ github.run_number }}" \
+            --notes "## ClawBreak for Samsung Galaxy A16 (Android 14 / ARM64)
 
-            **Install on your A16:**
-            1. Download `app-debug.apk` below
-            2. On your A16: Settings \u2192 Apps \u2192 Special app access \u2192 Install unknown apps \u2192 enable your browser
-            3. Tap the downloaded APK and install
+Install:
+1. Download app-debug.apk below
+2. A16: Settings > Apps > Special access > Install unknown apps > enable Files
+3. Tap APK and install
 
-            **How it connects:**
-            Auto-fetches live cloud server URL from `endpoint.json`. Falls back to GitHub Pages PWA offline.
-          files: ${{ steps.apk_path.outputs.path }}
-          fail_on_unmatched_files: false
+Auto-connects to live cloud server via endpoint.json (falls back to GitHub Pages if offline)." \
+            "$APK" || true
