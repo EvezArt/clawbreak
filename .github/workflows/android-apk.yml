@@ -1,123 +1,73 @@
-name: Build Android APK
+name: "Build Android APK \u2014 Samsung A16"
 
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-    inputs:
-      ref:
-        description: 'Branch to build'
-        required: false
-        default: 'main'
 
 jobs:
-  build-apk:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Install Capacitor CLI + deps
-        run: |
-          npm install -g @capacitor/cli@latest
-          npm install
-
-      - name: Verify www directory
-        run: ls -la www/ && wc -c www/index.html
-
-      - name: Initialize Capacitor
-        run: |
-          # Only init if capacitor.config.json doesn't have appId set
-          if ! grep -q "com.evez.clawbreak" capacitor.config.json 2>/dev/null; then
-            npx cap init ClawBreak com.evez.clawbreak --web-dir www
-          fi
-          echo "Capacitor config OK"
-
-      - name: Set up Java 21
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '21'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Add Android platform
-        run: |
-          npx cap add android || echo "Android already added"
-          
-      - name: Sync web assets to Android
-        run: npx cap sync android
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android-native/**/*.gradle*') }}
+          restore-keys: gradle-${{ runner.os }}-
 
       - name: Set gradlew executable
-        run: chmod +x android/gradlew
+        working-directory: android-native
+        run: chmod +x gradlew
 
-      - name: Update Android app name
+      - name: Build Debug APK
+        working-directory: android-native
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Locate APK
+        id: apk_path
         run: |
-          sed -i 's/android:label="[^"]*"/android:label="ClawBreak"/' android/app/src/main/AndroidManifest.xml || true
+          APK=$(find android-native -name "*.apk" -type f | head -1)
+          echo "path=$APK" >> $GITHUB_OUTPUT
+          echo "Found APK: $APK"
+          ls -lh "$APK"
 
-      - name: Build debug APK (for distribution)
-        working-directory: android
-        run: |
-          ./gradlew assembleDebug --no-daemon -q
-          ls -la app/build/outputs/apk/debug/
-
-      - name: Build release APK (unsigned)
-        working-directory: android
-        run: |
-          ./gradlew assembleRelease --no-daemon -q || echo "Release build may need signing config"
-          ls -la app/build/outputs/apk/release/ 2>/dev/null || true
-
-      - name: Upload debug APK
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ClawBreak-EVEZ-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          name: ClawBreak-A16-debug
+          path: ${{ steps.apk_path.outputs.path }}
+          retention-days: 90
 
-      - name: Upload release APK (if built)
-        uses: actions/upload-artifact@v4
-        if: always()
+      - name: Create GitHub Release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
         with:
-          name: ClawBreak-EVEZ-release-apk  
-          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Create GitHub Release with APK
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: build-${{ github.run_number }}
-          name: "ClawBreak EVEZ Build #${{ github.run_number }}"
+          tag_name: apk-build-${{ github.run_number }}
+          name: "ClawBreak A16 \u2014 Build #${{ github.run_number }}"
           body: |
-            ## ClawBreak + EVEZ-OS Android APK
-            
-            **Build:** ${{ github.run_number }}  
-            **Commit:** ${{ github.sha }}
-            
-            ### Install on Samsung Galaxy A16
+            ## ClawBreak for Samsung Galaxy A16 (Android 14 / ARM64)
+
+            **Install on your A16:**
             1. Download `app-debug.apk` below
-            2. Enable "Install from unknown sources" in Settings > Security
-            3. Open the APK file to install
-            
-            ### Features
-            - AI chat with Groq/OpenAI/custom backend
-            - Tool execution (shell, search, memory, file)
-            - EVEZ-OS forensic cognition layer
-            - Persistent memory across sessions
-            - Railway backend integration
-          files: |
-            android/app/build/outputs/apk/debug/app-debug.apk
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            2. On your A16: Settings \u2192 Apps \u2192 Special app access \u2192 Install unknown apps \u2192 enable your browser
+            3. Tap the downloaded APK and install
+
+            **How it connects:**
+            Auto-fetches live cloud server URL from `endpoint.json`. Falls back to GitHub Pages PWA offline.
+          files: ${{ steps.apk_path.outputs.path }}
+          fail_on_unmatched_files: false
