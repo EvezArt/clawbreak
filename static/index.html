@@ -105,5 +105,6 @@ await fetch(API+'/config',{method:'POST',headers:{'Content-Type':'application/js
 async function checkHealth(){try{const r=await fetch(API+'/health');const d=await r.json();document.getElementById('status-dot').className='dot';document.getElementById('status-text').textContent=d.model||'OK'}catch{document.getElementById('status-dot').className='dot off';document.getElementById('status-text').textContent='Offline'}}
 checkHealth();setInterval(checkHealth,30000);
 </script>
+<div id="openclaw-surface-link" style="position:fixed;right:14px;bottom:14px;z-index:99999;background:linear-gradient(135deg,#001b12,#06152e);color:#eafff6;border:1px solid #00ff88;border-radius:14px;padding:10px 12px;font:13px system-ui;box-shadow:0 0 24px #00ff8840">⚡ OpenClaw: <a style="color:#00ff88" href="http://localhost:18789" target="_blank">local</a> · <a style="color:#00bbff" href="https://github.com/EvezArt/evez-openclaw-deploy" target="_blank">deploy</a></div>
 </body>
 </html>
