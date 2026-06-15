@@ -131,9 +131,22 @@
 </footer>
 
 <script>
-function checkout(plan) {
-    // Stripe checkout integration — will be wired once Stripe is configured
-    alert(`🎉 ${plan.toUpperCase()} plan selected!\n\nStripe checkout coming soon. Email steven@evez.systems to be an early customer.`);
+async function checkout(plan) {
+    try {
+        const resp = await fetch('/billing/checkout', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({plan})
+        });
+        const data = await resp.json();
+        if (data.url) {
+            window.location.href = data.url;
+        } else {
+            alert('Error: ' + (data.error || 'Failed to create checkout session'));
+        }
+    } catch (err) {
+        alert('Network error: ' + err.message);
+    }
 }
 </script>
 

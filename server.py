@@ -18,6 +18,8 @@ from memory import Memory
 from tools import ToolEngine
 from tool_parser import parse_tool_calls
 
+import stripe
+
 # Init
 config = Config()
 memory = Memory(config.get("memory", "db_path"))
@@ -25,17 +27,23 @@ tools = ToolEngine(config, memory)
 
 app = FastAPI(title="ClawBreak", version="0.1.0")
 
+# --- Stripe Config ---
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_IDS = {
+    "pro": os.environ.get("STRIPE_PRICE_ID_PRO", ""),
+    "team": os.environ.get("STRIPE_PRICE_ID_TEAM", ""),
+    "enterprise": os.environ.get("STRIPE_PRICE_ID_ENTERPRISE", ""),
+}
+BASE_URL = os.environ.get("BASE_URL", "http://localhost:8000")
+
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
+
 # --- LLM Client ---
 
-async def chat_completion(messages, stream=False):
-    """Call the LLM API."""
-    api_key = config.get("llm", "api_key")
-    base_url = config.get("llm", "base_url")
-    model = config.get("llm", "model")
-
-    if not api_key:
-        return {"error": "No API key configured. Set CLAWBREAK_LLM_API_KEY or add to config.yaml"}
-
+async def _call_llm(base_url, api_key, model, messages, stream=False, timeout=120):
+    """Single LLM API call. Returns (result_dict, error_string)."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -47,16 +55,48 @@ async def chat_completion(messages, stream=False):
         "temperature": config.get("llm", "temperature"),
         "stream": stream,
     }
-
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             resp = await client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
             resp.raise_for_status()
-            return resp.json()
+            return resp.json(), None
         except httpx.HTTPStatusError as e:
-            return {"error": f"LLM API error {e.response.status_code}: {e.response.text[:500]}"}
+            return None, f"LLM API error {e.response.status_code}: {e.response.text[:500]}"
         except Exception as e:
-            return {"error": f"LLM request failed: {e}"}
+            return None, f"LLM request failed: {e}"
+
+
+async def chat_completion(messages, stream=False):
+    """Call the LLM API with fallback chain (EVEZ API → Vultr direct)."""
+    # Try fallback chain first
+    fallback_chain = config.data.get("fallback", [])
+    if fallback_chain:
+        for backend in fallback_chain:
+            base_url = backend.get("base_url", "")
+            api_key = backend.get("api_key", "")
+            model = backend.get("model", config.get("llm", "model"))
+            timeout = backend.get("timeout", 30)
+            if not api_key:
+                continue
+            result, err = await _call_llm(base_url, api_key, model, messages, stream=stream, timeout=timeout)
+            if result:
+                return result
+            # Backend failed, try next
+            continue
+        # All fallbacks failed, fall through to primary
+
+    # Primary (legacy) path
+    api_key = config.get("llm", "api_key")
+    base_url = config.get("llm", "base_url")
+    model = config.get("llm", "model")
+
+    if not api_key:
+        return {"error": "No API key configured. Set CLAWBREAK_LLM_API_KEY or add to config.yaml"}
+
+    result, err = await _call_llm(base_url, api_key, model, messages, stream=stream)
+    if result:
+        return result
+    return {"error": err or "All LLM backends failed"}
 
 
 async def chat_completion_stream(messages):
@@ -151,14 +191,30 @@ async def process_message(user_message: str, session_id: str = "default") -> str
 
 # --- Routes ---
 
+async def _check_evez_health():
+    """Check EVEZ API health and return status dict."""
+    evez_cfg = config.data.get("evez_api", {})
+    base_url = evez_cfg.get("base_url", "http://localhost:8081")
+    health_path = evez_cfg.get("health_path", "/health")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{base_url}{health_path}")
+            resp.raise_for_status()
+            return {"status": "ok", **resp.json()}
+    except Exception as e:
+        return {"status": "unreachable", "error": str(e)}
+
+
 @app.get("/health")
 async def health():
+    evez_status = await _check_evez_health()
     return {
         "status": "ok",
         "version": "0.1.0",
         "model": config.get("llm", "model"),
         "memory_facts": len(memory.list_facts(limit=9999)),
         "uptime": time.time(),
+        "evez_api": evez_status,
     }
 
 
@@ -259,6 +315,108 @@ async def websocket_chat(websocket: WebSocket):
         pass
 
 
+# --- Stripe Billing Endpoints ---
+
+@app.post("/billing/checkout")
+async def billing_checkout(request: Request):
+    """Create a Stripe Checkout Session for the given plan."""
+    if not STRIPE_SECRET_KEY:
+        return JSONResponse({"error": "Stripe not configured. Set STRIPE_SECRET_KEY."}, status_code=500)
+
+    body = await request.json()
+    plan = body.get("plan", "").lower()
+
+    if plan not in STRIPE_PRICE_IDS:
+        return JSONResponse({"error": f"Invalid plan. Choose from: {', '.join(STRIPE_PRICE_IDS.keys())}"}, status_code=400)
+
+    price_id = STRIPE_PRICE_IDS[plan]
+    if not price_id:
+        return JSONResponse({"error": f"No Stripe price ID configured for plan '{plan}'. Set STRIPE_PRICE_ID_{plan.upper()}."}, status_code=500)
+
+    try:
+        session = stripe.checkout.Session.create(
+            mode="subscription",
+            payment_method_types=["card"],
+            line_items=[{"price": price_id, "quantity": 1}],
+            success_url=f"{BASE_URL}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{BASE_URL}/pricing",
+            metadata={"plan": plan},
+        )
+        return {"url": session.url, "session_id": session.id}
+    except stripe.error.StripeError as e:
+        return JSONResponse({"error": f"Stripe error: {str(e)}"}, status_code=502)
+
+
+@app.post("/billing/portal")
+async def billing_portal(request: Request):
+    """Create a Stripe Customer Portal session for managing subscriptions."""
+    if not STRIPE_SECRET_KEY:
+        return JSONResponse({"error": "Stripe not configured."}, status_code=500)
+
+    body = await request.json()
+    customer_id = body.get("customer_id")
+    if not customer_id:
+        return JSONResponse({"error": "customer_id is required"}, status_code=400)
+
+    try:
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=f"{BASE_URL}/pricing",
+        )
+        return {"url": session.url}
+    except stripe.error.StripeError as e:
+        return JSONResponse({"error": f"Stripe error: {str(e)}"}, status_code=502)
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    """Handle Stripe webhook events."""
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature", "")
+
+    if STRIPE_WEBHOOK_SECRET:
+        try:
+            event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        except stripe.error.SignatureVerificationError:
+            return JSONResponse({"error": "Invalid signature"}, status_code=400)
+    else:
+        event = json.loads(payload)
+
+    evt_type = event.get("type", "")
+
+    # Route events
+    if evt_type == "checkout.session.completed":
+        session_obj = event["data"]["object"]
+        plan = session_obj.get("metadata", {}).get("plan", "unknown")
+        customer_id = session_obj.get("customer")
+        print(f"✅ Checkout completed: plan={plan}, customer={customer_id}")
+        # TODO: activate plan for customer in your DB
+
+    elif evt_type == "customer.subscription.updated":
+        sub = event["data"]["object"]
+        print(f"🔄 Subscription updated: {sub.get('id')}")
+
+    elif evt_type == "customer.subscription.deleted":
+        sub = event["data"]["object"]
+        print(f"❌ Subscription canceled: {sub.get('id')}")
+        # TODO: downgrade customer
+
+    elif evt_type == "invoice.payment_failed":
+        inv = event["data"]["object"]
+        print(f"⚠️ Payment failed: {inv.get('id')}")
+
+    else:
+        print(f"ℹ️ Unhandled webhook: {evt_type}")
+
+    return {"received": True}
+
+
+@app.get("/billing/success")
+async def billing_success():
+    """Landing page after successful checkout."""
+    return HTMLResponse("<html><body style='background:#0a0a0f;color:#e0e0e0;font-family:sans-serif;text-align:center;padding-top:15vh'><h1>✅ Welcome to ClawBreak!</h1><p>Your subscription is active.</p><p><a href='/pricing' style='color:#ff4500'>Back to pricing</a></p></body></html>")
+
+
 # Serve web UI
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -303,6 +461,33 @@ def main():
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
+
+
+@app.get("/api/v1/models")
+async def list_models():
+    """List available models from EVEZ API, falling back to local config."""
+    evez_cfg = config.data.get("evez_api", {})
+    base_url = evez_cfg.get("base_url", "http://localhost:8081")
+    models_path = evez_cfg.get("models_path", "/v1/models")
+    # Try EVEZ API first
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{base_url}{models_path}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        pass
+    # Fallback: return the configured model
+    return {
+        "object": "list",
+        "data": [{
+            "id": config.get("llm", "model"),
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "vultr",
+            "note": "EVEZ API unreachable, showing primary model only"
+        }]
+    }
 
 
 # === EVEZ-OS Integration ===
