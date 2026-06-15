@@ -421,11 +421,19 @@ async def billing_success():
 STATIC_DIR = Path(__file__).parent / "static"
 
 @app.get("/")
-async def serve_ui():
+async def serve_landing():
+    landing = STATIC_DIR / "landing.html"
+    if landing.exists():
+        return HTMLResponse(landing.read_text())
+    return HTMLResponse("<h1>EVEZ-OS</h1><p>Landing page not found.</p>")
+
+
+@app.get("/chat")
+async def serve_chat():
     index = STATIC_DIR / "index.html"
     if index.exists():
         return HTMLResponse(index.read_text())
-    return HTMLResponse("<h1>ClawBreak</h1><p>Web UI not found. Use the API.</p>")
+    return HTMLResponse("<h1>ClawBreak Chat</h1><p>Chat UI not found. Use the API.</p>")
 
 
 @app.get("/config")
