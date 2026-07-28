@@ -16,6 +16,6 @@
     "@capacitor/core": "^8.4.2"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.0.0"
+    "@capacitor/cli": "^8.4.2"
   }
 }
